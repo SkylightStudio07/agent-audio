@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import math
 import os
 import platform
@@ -14,9 +15,9 @@ from pathlib import Path
 
 from .backends import get_backend
 from .detect import detect_environment, recommended_backend
-from .download_models import MODEL_REVISION
+from .download_models import MODEL_REVISION, TORCH_MODEL_REVISION
 from .process import run_inference
-from .storage import file_lock, reject_link
+from .storage import atomic_write, file_lock, read_optional, reject_link
 
 UPSTREAM_REPO = "https://github.com/Stability-AI/stable-audio-3.git"
 UPSTREAM_REVISION = "779434a908193105335fd8d833418603625b2859"
@@ -69,7 +70,29 @@ def runtime_environment() -> dict[str, str]:
 
 
 def _backend_folder(backend: str) -> Path:
+    if get_backend(backend).accelerated:
+        return data_root() / "runtimes" / backend
     return runtime_paths().upstream / "optimized" / get_backend(backend).name
+
+
+def selected_backend(info=None) -> str:
+    config = data_root() / "backend.json"
+    reject_link(config)
+    raw = read_optional(config)
+    if raw is not None:
+        backend = json.loads(raw)["backend"]
+        get_backend(backend).validate_platform()
+        return backend
+    return recommended_backend(info if info is not None else detect_environment())
+
+
+def _save_backend(backend: str) -> None:
+    config = data_root() / "backend.json"
+    with file_lock(config):
+        raw = read_optional(config)
+        settings = json.loads(raw) if raw is not None else {}
+        settings["backend"] = backend
+        atomic_write(config, raw, (json.dumps(settings) + "\n").encode())
 
 
 def runtime_python(backend: str) -> Path:
@@ -101,7 +124,14 @@ def runtime_details(backend: str) -> dict[str, object]:
         "model_files": [str(path) for path in _model_paths(backend)],
         "model_cache": runtime_environment()["HF_HUB_CACHE"],
         "runtime_revision": UPSTREAM_REVISION,
-        "model_revision": MODEL_REVISION,
+        "model_revision": TORCH_MODEL_REVISION
+        if get_backend(backend).accelerated
+        else MODEL_REVISION,
+        "acceleration": {
+            "requested": backend if get_backend(backend).accelerated else None,
+            "gpu_probe": "not_checked",
+            "generation": "not_checked",
+        },
         "capabilities": {"negative_prompt": False},
         "readiness": {
             "scope": "files_and_headers",
@@ -197,11 +227,13 @@ def _venv_ready(backend: str) -> bool:
 
 
 def install_runtime(backend: str | None = None) -> str:
-    backend = backend or recommended_backend(detect_environment())
-    get_backend(backend)
+    backend = backend or selected_backend()
+    adapter = get_backend(backend)
+    adapter.validate_platform()
     with file_lock(runtime_paths().upstream):
         ensure_upstream_checkout()
         folder = _backend_folder(backend)
+        folder.mkdir(parents=True, exist_ok=True)
         venv = folder / ".venv"
         uv = shutil.which("uv")
         if not uv:
@@ -222,24 +254,10 @@ def install_runtime(backend: str | None = None) -> str:
                 timeout=300,
             )
         python = runtime_python(backend)
-        subprocess.run(
-            [
-                uv,
-                "pip",
-                "install",
-                "--python",
-                str(python),
-                "-r",
-                str(folder / "requirements.txt"),
-                # HF's HTTP transport needs this extra for inherited SOCKS proxies.
-                "socksio>=1,<2",
-            ],
-            env=env,
-            stdin=subprocess.DEVNULL,
-            stdout=sys.stderr,
-            check=True,
-            timeout=600,
-        )
+        if adapter.accelerated:
+            _install_torch_dependencies(backend, uv, python, env)
+        else:
+            _install_optimized_dependencies(uv, python, folder, env)
         downloader = Path(__file__).with_name("download_models.py")
         subprocess.run(
             [
@@ -263,17 +281,95 @@ def install_runtime(backend: str | None = None) -> str:
             raise RuntimeError(
                 "Runtime installation finished without all required model files."
             )
+        _save_backend(backend)
     return backend
 
 
+def _install_optimized_dependencies(uv, python, folder, env) -> None:
+    subprocess.run(
+        [
+            uv,
+            "pip",
+            "install",
+            "--python",
+            str(python),
+            "-r",
+            str(folder / "requirements.txt"),
+            # HF's HTTP transport needs this extra for inherited SOCKS proxies.
+            "socksio>=1,<2",
+        ],
+        env=env,
+        stdin=subprocess.DEVNULL,
+        stdout=sys.stderr,
+        check=True,
+        timeout=600,
+    )
+
+
+def _install_torch_dependencies(backend, uv, python, env) -> None:
+    adapter = get_backend(backend)
+    variant = "cu128" if backend == "cuda" else "rocm6.3"
+    version = f"2.7.1+{variant}"
+    # Refuse a pre-existing CPU/wrong-vendor/version distribution, rather than
+    # replacing it. An empty venv from an interrupted install can be retried.
+    subprocess.run(
+        [
+            str(python),
+            "-I",
+            "-c",
+            "from importlib.metadata import distributions; "
+            "import sys; "
+            "bad = [d.metadata['Name'] for d in distributions() "
+            f"if d.metadata['Name'].lower() in ('torch', 'torchaudio') and d.version != {version!r}]; "
+            "sys.exit('Conflicting GPU runtime packages; preserved: ' + ', '.join(bad)) if bad else None",
+        ],
+        env=env,
+        stdin=subprocess.DEVNULL,
+        stdout=sys.stderr,
+        check=True,
+        timeout=30,
+    )
+    # Direct vendor wheel references keep PyTorch's index from shadowing newer
+    # ordinary dependencies on PyPI under uv's safe first-index resolution.
+    subprocess.run(
+        [
+            uv,
+            "pip",
+            "install",
+            "--python",
+            str(python),
+            *adapter.wheel_requirements(),
+            str(runtime_paths().upstream),
+            "socksio>=1,<2",
+        ],
+        env=env,
+        stdin=subprocess.DEVNULL,
+        stdout=sys.stderr,
+        check=True,
+        timeout=1800,
+    )
+    command, cwd = _runtime_command(backend)
+    subprocess.run(
+        command + ["--probe"],
+        cwd=cwd,
+        env=env,
+        stdin=subprocess.DEVNULL,
+        stdout=sys.stderr,
+        check=True,
+        timeout=120,
+    )
+
+
 def backend_ready(backend: str | None = None) -> bool:
-    backend = backend or recommended_backend(detect_environment())
+    backend = backend or selected_backend()
     adapter = get_backend(backend)
     folder = _backend_folder(backend)
-    if (
-        not _venv_ready(backend)
-        or not (folder / "scripts" / adapter.script_name).is_file()
-    ):
+    script = (
+        Path(__file__).with_name("torch_runner.py")
+        if adapter.accelerated
+        else folder / "scripts" / adapter.script_name
+    )
+    if not _venv_ready(backend) or not script.is_file():
         return False
     try:
         for path in _model_paths(backend):
@@ -297,6 +393,16 @@ def backend_ready(backend: str | None = None) -> bool:
 
 def _runtime_command(backend: str) -> tuple[list[str], Path]:
     folder = _backend_folder(backend)
+    if get_backend(backend).accelerated:
+        return [
+            str(runtime_python(backend)),
+            "-I",
+            str(Path(__file__).with_name("torch_runner.py")),
+            "--backend",
+            backend,
+            "--models",
+            str(folder / "models" / backend),
+        ], folder
     # No shell or wrapper fallback. -I excludes user-site/PYTHONPATH and CWD imports.
     return [
         str(runtime_python(backend)),
@@ -336,7 +442,7 @@ def generate_audio(
         raise ValueError("prompt must be non-empty and prompts must not contain NUL")
     if not math.isfinite(seconds) or seconds <= 0 or seconds > 380:
         raise ValueError("seconds must be finite, > 0 and <= 380")
-    backend = recommended_backend(detect_environment())
+    backend = selected_backend()
     adapter = get_backend(backend)
     adapter.validate_negative_prompt(negative_prompt)
     if not backend_ready(backend):

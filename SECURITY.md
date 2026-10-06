@@ -35,6 +35,13 @@ An arbitrary folder with a README is never considered an executable runtime.
 This is a provenance check, not protection against a malicious local account
 that can rewrite Git metadata, dependencies or the server itself.
 
+The opt-in CUDA/ROCm environments are separate from CPU/MLX. GPU model files
+use a separate immutable Medium revision and are compared with resolved cache
+content without independently pinned checksum references. GPU inference loads
+the local checkpoint and bundled encoder with offline mode; it does not invoke
+upstream's unpinned model resolver. Backend selection is saved only after the
+GPU kernel probe and file readiness checks pass. This is not a generation test.
+
 Model downloads use an immutable Hugging Face revision in Agent Audio's private
 cache. TFLite files additionally have pinned SHA-256 checksums. MLX downloads are
 revision-pinned and installed files are checked against the resolved cache
@@ -48,7 +55,7 @@ copies do not occupy the final model path. The destination filesystem must
 support hardlinks; otherwise publication fails safely. An abrupt process kill
 may leave a staging file, but a retry does not treat it as an installed model.
 
-Both runtimes use dedicated Python virtual environments and isolated Python
+All backends use dedicated Python virtual environments and isolated Python
 launches. Inherited Python import paths and common virtual-environment selectors
 are removed. Generation is offline and never silently downloads new model
 revisions. Explicit HF credentials and network proxy settings remain available

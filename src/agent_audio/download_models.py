@@ -11,6 +11,18 @@ from pathlib import Path
 
 MODEL_REPO = "stabilityai/stable-audio-3-optimized"
 MODEL_REVISION = "da6edc54ddba10bfd79a077102ded687f80e882b"
+TORCH_MODEL_REPO = "stabilityai/stable-audio-3-medium"
+TORCH_MODEL_REVISION = "27b5a21b791b1b033d193a9e1e3ce78493f102f9"
+TORCH_FILES = (
+    "model_config.json",
+    "model.safetensors",
+    "t5gemma-b-b-ul2/config.json",
+    "t5gemma-b-b-ul2/model.safetensors",
+    "t5gemma-b-b-ul2/special_tokens_map.json",
+    "t5gemma-b-b-ul2/tokenizer.json",
+    "t5gemma-b-b-ul2/tokenizer.model",
+    "t5gemma-b-b-ul2/tokenizer_config.json",
+)
 # Values independently checked against a fresh download during the Windows test.
 TFLITE_SHA256 = {
     "sa3-m/dit_fp32.tflite": "b811dc7d0135ca48afbc7a7bb7d19bdaaad13cbcb592418b8aa169e0c149daba",
@@ -40,12 +52,23 @@ def download(
 ) -> None:
     from huggingface_hub import hf_hub_download
 
-    manifest = TFLITE_SHA256 if backend == "tflite" else dict.fromkeys(MLX_FILES)
+    if backend not in {"tflite", "mlx", "cuda", "rocm"}:
+        raise ValueError(f"Unsupported backend: {backend}")
+    accelerated = backend in {"cuda", "rocm"}
+    manifest = (
+        dict.fromkeys(TORCH_FILES)
+        if accelerated
+        else TFLITE_SHA256
+        if backend == "tflite"
+        else dict.fromkeys(MLX_FILES)
+    )
+    repo = TORCH_MODEL_REPO if accelerated else MODEL_REPO
+    revision = TORCH_MODEL_REVISION if accelerated else MODEL_REVISION
     if benchmark_small:
         if backend != "tflite":
             raise ValueError("Small-SFX benchmark download currently requires TFLite")
         manifest = TFLITE_BENCHMARK_SHA256
-    prefix = "tflite" if backend == "tflite" else "MLX"
+    prefix = "" if accelerated else "tflite/" if backend == "tflite" else "MLX/"
     for name, expected in manifest.items():
         target = root / "models" / backend / name
         # Always resolve via the pinned revision, even when a local model exists.
@@ -53,7 +76,19 @@ def download(
         # symlink itself: relocating that symlink can break its relative target.
         cached = Path(
             hf_hub_download(
-                MODEL_REPO, f"{prefix}/{name}", revision=MODEL_REVISION, cache_dir=cache
+                repo,
+                f"{prefix}{name}",
+                revision=revision,
+                cache_dir=cache,
+                # Some proxies/CDNs buffer a whole large response before sending
+                # data. A full-range request permits streaming without changing
+                # the pinned file, authentication or cache verification policy.
+                **(
+                    {"headers": {"Range": "bytes=0-"}}
+                    if os.environ.get("HF_HUB_DISABLE_XET", "").lower()
+                    in {"1", "true", "yes", "on"}
+                    else {}
+                ),
             )
         ).resolve(strict=True)
         actual = digest(cached)
@@ -104,7 +139,9 @@ def download(
 
 def main() -> None:
     parser = argparse.ArgumentParser()
-    parser.add_argument("--backend", choices=("tflite", "mlx"), required=True)
+    parser.add_argument(
+        "--backend", choices=("tflite", "mlx", "cuda", "rocm"), required=True
+    )
     parser.add_argument("--root", type=Path, required=True)
     parser.add_argument("--cache", type=Path, required=True)
     parser.add_argument("--benchmark-small", action="store_true")

@@ -13,16 +13,19 @@ def main() -> None:
     group.add_argument("--doctor", action="store_true")
     group.add_argument("--runtime-only", action="store_true")
     group.add_argument("--register-only", action="store_true")
+    parser.add_argument("--backend", choices=("tflite", "mlx", "cuda", "rocm"))
     args = parser.parse_args()
+    if args.backend and (args.doctor or args.register_only):
+        parser.error("--backend requires runtime installation")
 
     if args.doctor:
         result = doctor()
     elif args.runtime_only:
-        result = {"runtime_backend": install_runtime(), "doctor": doctor()}
+        result = {"runtime_backend": install_runtime(args.backend), "doctor": doctor()}
     elif args.register_only:
         result = register_agents()
     else:
-        result = perform_install()
+        result = perform_install(backend=args.backend)
 
     print(json.dumps(result, indent=2, ensure_ascii=False))
     if result.get("success") is False:

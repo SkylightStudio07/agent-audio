@@ -1,13 +1,26 @@
 import asyncio
 import datetime
+import json
 import os
+import platform
 import sys
 
+import pytest
 from mcp import ClientSession, StdioServerParameters
 from mcp.client.stdio import stdio_client
 
 
-def test_real_stdio_status_and_input_rejection(tmp_path):
+@pytest.mark.parametrize("backend", [None, "cuda", "rocm"])
+def test_real_stdio_status_and_input_rejection(tmp_path, backend):
+    if backend:
+        if (
+            platform.system() == "Darwin"
+            or (backend == "rocm" and platform.system() != "Linux")
+            or platform.machine().lower() not in {"amd64", "x86_64"}
+        ):
+            pytest.skip("GPU backend is not supported on this platform")
+        (tmp_path / "backend.json").write_text(json.dumps({"backend": backend}))
+
     async def probe():
         params = StdioServerParameters(
             command=sys.executable,
@@ -26,6 +39,8 @@ def test_real_stdio_status_and_input_rejection(tmp_path):
                 }
                 status = await session.call_tool("audio_status", {})
                 assert not status.isError
+                if backend:
+                    assert status.structuredContent["selected_backend"] == backend
                 assert status.structuredContent["runtime_ready"] is False
                 assert (
                     status.structuredContent["capabilities"]["negative_prompt"] is False

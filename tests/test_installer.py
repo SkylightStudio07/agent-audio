@@ -30,6 +30,7 @@ def test_cursor_registration_preserves_existing_servers_and_backup(
 def test_codex_timeout_preserves_other_settings_and_is_idempotent(
     tmp_path, monkeypatch
 ):
+    monkeypatch.delenv("AGENT_AUDIO_HOME", raising=False)
     monkeypatch.setenv("CODEX_HOME", str(tmp_path))
     config = tmp_path / "config.toml"
     original = '[mcp_servers.unrelated]\ncommand = "keep"\n\n[mcp_servers.agent-audio]\ncommand = "python"\nargs = ["-I", "-m", "agent_audio.mcp_server"]\n'
@@ -55,6 +56,7 @@ def test_codex_timeout_does_not_change_conflicting_registration(tmp_path, monkey
 
 
 def test_codex_timeout_ignores_header_inside_multiline_string(tmp_path, monkeypatch):
+    monkeypatch.delenv("AGENT_AUDIO_HOME", raising=False)
     monkeypatch.setenv("CODEX_HOME", str(tmp_path))
     config = tmp_path / "config.toml"
     original = (

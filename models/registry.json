@@ -26,9 +26,14 @@
           "source": "official optimized/tflite runtime"
         },
         "cuda": {
-          "status": "planned-validation",
-          "platform": "NVIDIA",
-          "note": "Core upstream Python path requires CUDA and Flash Attention support for Medium. Do not auto-select until installer validation is added."
+          "status": "opt-in-validated-windows-rtx5060ti",
+          "platform": "NVIDIA, Windows/Linux x86-64",
+          "note": "A 3-second Medium WAV through standalone stdio MCP was verified on Windows with an RTX 5060 Ti. Other GPUs and Linux CUDA remain unverified."
+        },
+        "rocm": {
+          "status": "opt-in-generation-unverified",
+          "platform": "AMD, ROCm 6.3 supported Linux x86-64 systems",
+          "note": "Official PyTorch runtime with ROCm 6.3 wheels and installation GPU kernel probe. Windows AMD uses CPU. Real generation remains unverified."
         },
         "xpu": {
           "status": "experimental-not-enabled",

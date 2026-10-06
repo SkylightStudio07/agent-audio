@@ -81,8 +81,18 @@ If model access requires authentication or license acceptance, stop at that step
 
 - Apple Silicon: select the official optimized MLX runtime. Verify real generation separately on that hardware.
 - Other systems: use the official TFLite/LiteRT CPU runtime as the default.
-- NVIDIA acceleration: not currently auto-selected. Use it only after an adapter has been validated on the current OS.
+- NVIDIA acceleration: not auto-selected. The opt-in adapter requires separate real generation validation on the current OS.
+- CUDA is now an opt-in adapter: `uv run --frozen python install/bootstrap.py --runtime-only --backend cuda` on Windows/Linux x86-64.
+- AMD ROCm is opt-in: use `--runtime-only --backend rocm` on Linux x86-64 with a ROCm 6.3 supported GPU and OS. Windows AMD remains on CPU; DirectML is not implemented.
 - Intel XPU: not currently enabled. Intel systems must remain functional through the CPU backend.
+
+See [GPU backend setup](docs/gpu-backends.md). Successful installation saves the
+backend selection for MCP clients, including Claude Code. Each GPU runtime is
+separate from the CPU/MLX runtime. A GPU kernel probe runs before gated-model
+downloads and does not prove Stable Audio inference. These adapters still need
+real generation validation; report that limitation. The default remains CPU
+outside Apple Silicon until explicitly selected. Installation failure retains
+the previous selection and never silently switches to another model/backend.
 
 ## 6. Register MCP and Skill
 

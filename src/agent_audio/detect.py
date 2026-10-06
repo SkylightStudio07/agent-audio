@@ -18,6 +18,7 @@ class EnvironmentInfo:
     codex_installed: bool
     claude_installed: bool
     cursor_installed: bool
+    amd_graphics_detected: bool = False
 
     def to_dict(self) -> dict[str, object]:
         return asdict(self)
@@ -45,7 +46,7 @@ def _detect_nvidia() -> bool:
     return False
 
 
-def _detect_intel_graphics() -> bool:
+def _graphics_output() -> str:
     system = platform.system()
     if system == "Windows":
         output = _command_output(
@@ -62,8 +63,7 @@ def _detect_intel_graphics() -> bool:
         output = _command_output(
             ["sh", "-lc", "lspci 2>/dev/null | grep -Ei 'vga|3d|display'"]
         )
-    low = output.lower()
-    return "intel" in low or "arc" in low
+    return output.lower()
 
 
 def detect_environment() -> EnvironmentInfo:
@@ -71,6 +71,7 @@ def detect_environment() -> EnvironmentInfo:
     machine = platform.machine()
     arch = platform.architecture()[0]
     apple_silicon = system == "Darwin" and machine.lower() in {"arm64", "aarch64"}
+    graphics = _graphics_output()
 
     return EnvironmentInfo(
         os=system,
@@ -78,12 +79,13 @@ def detect_environment() -> EnvironmentInfo:
         machine=machine,
         apple_silicon=apple_silicon,
         nvidia_detected=_detect_nvidia(),
-        intel_graphics_detected=_detect_intel_graphics(),
+        intel_graphics_detected="intel" in graphics or "arc" in graphics,
         codex_installed=shutil.which("codex") is not None,
         claude_installed=shutil.which("claude") is not None,
         cursor_installed=(
             shutil.which("cursor") is not None or shutil.which("agent") is not None
         ),
+        amd_graphics_detected="amd" in graphics or "radeon" in graphics,
     )
 
 

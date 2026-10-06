@@ -17,6 +17,7 @@ from .runtime import (
     install_runtime,
     runtime_details,
     runtime_paths,
+    selected_backend,
 )
 from .storage import atomic_write, file_lock, read_optional, reject_link
 
@@ -377,21 +378,25 @@ def register_agents() -> dict[str, object]:
 
 def doctor() -> dict[str, object]:
     info = detect_environment()
-    backend = recommended_backend(info)
+    backend = selected_backend(info)
     return {
         "environment": info.to_dict(),
         "recommended_backend": backend,
+        "default_backend": recommended_backend(info),
         "runtime_ready": backend_ready(backend),
         "runtime_path": str(runtime_paths().upstream),
         **runtime_details(backend),
         "warnings": [
             message
             for message in (
-                "NVIDIA detected: using portable CPU until a validated adapter is available."
-                if info.nvidia_detected
+                "NVIDIA detected: CPU is the default. Opt in to CUDA with --backend cuda; verify generation separately."
+                if info.nvidia_detected and backend == "tflite"
                 else "",
                 "Intel graphics detected: using CPU; XPU acceleration is not enabled."
                 if info.intel_graphics_detected
+                else "",
+                "AMD detected: ROCm is opt-in on supported Linux GPUs. Windows AMD uses TFLite CPU; no DirectML support is claimed."
+                if info.amd_graphics_detected and backend == "tflite"
                 else "",
             )
             if message
@@ -399,10 +404,14 @@ def doctor() -> dict[str, object]:
     }
 
 
-def perform_install(runtime: bool = True, register: bool = True) -> dict[str, object]:
+def perform_install(
+    runtime: bool = True, register: bool = True, backend: str | None = None
+) -> dict[str, object]:
     result: dict[str, object] = {"doctor_before": doctor()}
     if runtime:
-        result["runtime_backend"] = install_runtime()
+        result["runtime_backend"] = (
+            install_runtime(backend) if backend else install_runtime()
+        )
     if register:
         result["registration"] = register_agents()
         result["success"] = result["registration"]["success"]

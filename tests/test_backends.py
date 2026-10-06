@@ -9,7 +9,7 @@ from agent_audio.backends import get_backend
 from agent_audio.detect import EnvironmentInfo
 
 
-@pytest.mark.parametrize("backend", ["tflite", "mlx"])
+@pytest.mark.parametrize("backend", ["tflite", "mlx", "cuda", "rocm"])
 def test_negative_prompt_rejected_before_readiness_or_inference(backend, monkeypatch):
     monkeypatch.setattr(runtime, "detect_environment", lambda: None)
     monkeypatch.setattr(runtime, "recommended_backend", lambda _: backend)

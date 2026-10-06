@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import json
+import platform
 import zipfile
 from dataclasses import dataclass
 from pathlib import Path
@@ -14,6 +16,13 @@ from .profiles import PROFILES
 class StableAudioBackend:
     name: str
     requires_tokenizer: bool
+
+    @property
+    def accelerated(self) -> bool:
+        return False
+
+    def validate_platform(self) -> None:
+        pass
 
     @property
     def script_name(self) -> str:
@@ -59,9 +68,70 @@ class StableAudioBackend:
         ]
 
 
+@dataclass(frozen=True)
+class TorchBackend(StableAudioBackend):
+    """Official PyTorch inference, with separate CUDA and HIP environments."""
+
+    @property
+    def accelerated(self) -> bool:
+        return True
+
+    @property
+    def model_files(self) -> tuple[str, ...]:
+        return download_models.TORCH_FILES
+
+    def validate_platform(self) -> None:
+        supported = {"Windows", "Linux"} if self.name == "cuda" else {"Linux"}
+        if platform.system() not in supported or platform.machine().lower() not in {
+            "amd64",
+            "x86_64",
+        }:
+            raise ValueError(
+                f"{self.name} requires {'Windows or Linux' if self.name == 'cuda' else 'Linux'} x86-64. "
+                "Use tflite for unsupported hardware/OS combinations."
+            )
+
+    @property
+    def wheel_index(self) -> str:
+        variant = "cu128" if self.name == "cuda" else "rocm6.3"
+        return f"https://download.pytorch.org/whl/{variant}"
+
+    def wheel_requirements(self) -> list[str]:
+        tag = "win_amd64" if platform.system() == "Windows" else "manylinux_2_28_x86_64"
+        variant = "cu128" if self.name == "cuda" else "rocm6.3"
+        return [
+            f"{package} @ {self.wheel_index}/{package}-2.7.1%2B{variant}-cp312-cp312-{tag}.whl"
+            for package in ("torch", "torchaudio")
+        ]
+
+    def model_header_valid(self, path: Path) -> bool:
+        if path.suffix == ".json":
+            try:
+                return isinstance(json.loads(path.read_text(encoding="utf-8")), dict)
+            except (ValueError, UnicodeError):
+                return False
+        if path.suffix == ".safetensors":
+            with path.open("rb") as stream:
+                size = int.from_bytes(stream.read(8), "little")
+                if not 0 < size <= min(path.stat().st_size - 8, 100_000_000):
+                    return False
+                try:
+                    return isinstance(json.loads(stream.read(size)), dict)
+                except (ValueError, UnicodeError):
+                    return False
+        return path.stat().st_size > 0
+
+    def generation_arguments(
+        self, prompt: str, seconds: float, output: Path
+    ) -> list[str]:
+        return [f"--prompt={prompt}", "--seconds", str(seconds), "--out", str(output)]
+
+
 BACKENDS = {
     "tflite": StableAudioBackend("tflite", requires_tokenizer=True),
     "mlx": StableAudioBackend("mlx", requires_tokenizer=False),
+    "cuda": TorchBackend("cuda", requires_tokenizer=False),
+    "rocm": TorchBackend("rocm", requires_tokenizer=False),
 }
 
 
